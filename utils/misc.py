@@ -27,6 +27,7 @@ def get_device(device: str = "cpu") -> torch.device:
     # 4. 단순 'cuda'인 경우
     return torch.device("cuda")
 
+
 def get_dtype(dtype: str = "float16") -> torch.dtype:
     """사용자 지정 데이터 유형을 반환합니다."""
     dtype = dtype.lower()
