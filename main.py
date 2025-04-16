@@ -1,11 +1,14 @@
 import argparse
 import os
+import torch
 import logging
 from models.sana import get_sana
 from prompt.loader import read_prompt_csv
 from prompt.generate import generate_image
 from utils.logger import setup_logger
 from utils.misc import get_device, get_dtype
+from utils.grid import create_grid_image
+from PIL import Image
 
 CATEGORY_LIST = [
     "Colors",
@@ -46,7 +49,7 @@ parser = argparse.ArgumentParser(description="Prompt Loader")
 parser.add_argument(
     "-v", "--verbose", action="store_true", help="Enable verbose output"
 )
-# prompt 관련
+# prompt related
 parser.add_argument(
     "--prompt", type=str, default="DrawBench.csv", help="Path to the prompt CSV file"
 )
@@ -57,10 +60,16 @@ parser.add_argument(
     default=["Colors"],
     help="Categories to load prompts from (multiple categories can be specified)",
 )
+# 새로운 플래그 추가: 모든 카테고리 사용
+parser.add_argument(
+    "--all-categories",
+    action="store_true",
+    help="Process all available categories in the prompt file"
+)
 parser.add_argument(
     "--num", type=int, default=1, help="Number of prompts to load from each category"
 )
-# model 관련
+# model related
 parser.add_argument(
     "--repo-id",
     type=str,
@@ -75,92 +84,194 @@ parser.add_argument(
     choices=["float16", "bfloat16", "float32"],
     help="Data type for the model",
 )
-# 출력 관련
+# output related
 parser.add_argument(
     "--output_dir",
     type=str,
     default="outputs",
     help="Directory to save generated images",
 )
+# grid related
+parser.add_argument(
+    "--no_grid",
+    action="store_true",
+    help="Skip creating grid images (grids are created by default)",
+)
+parser.add_argument(
+    "--grid_rows",
+    type=int,
+    default=None,
+    help="Number of rows in the grid (if not specified, square grid will be created)",
+)
+parser.add_argument(
+    "--title_size",
+    type=int,
+    default=100,
+    help="Height of the title area in pixels",
+)
+parser.add_argument(
+    "--prompt_size",
+    type=int,
+    default=80,
+    help="Height of the prompt area in pixels",
+)
+parser.add_argument(
+    "--title_font_size",
+    type=int,
+    default=36,
+    help="Font size for the category title",
+)
+parser.add_argument(
+    "--prompt_font_size",
+    type=int,
+    default=18,
+    help="Font size for the prompts",
+)
+parser.add_argument(
+    "--seed",
+    type=int,
+    default=42,
+    help="Random seed for reproducibility",
+)
 
 if __name__ == "__main__":
     args = parser.parse_args()
     logger = setup_logger(args.verbose)
 
-    logger.debug("프롬프트 파일 로드 중: %s", args.prompt)
+    logger.info("Loading prompt file: %s", args.prompt)
     prompt_dict = read_prompt_csv(args.prompt)
 
-    logger.debug("디바이스 설정: %s", args.device)
     device = get_device(args.device)
-
-    logger.debug("데이터 타입 설정: %s", args.dtype)
+    generator = torch.Generator(device=device).manual_seed(args.seed)
     dtype = get_dtype(args.dtype)
-
-    # 요청된 카테고리들에서 프롬프트 가져오기
+    
+    # 모든 카테고리 선택 플래그가 활성화되었으면 prompt_dict의 모든 키를 사용
+    if args.all_categories:
+        categories_to_process = list(prompt_dict.keys())
+        logger.info("Processing all available categories: %s", ", ".join(categories_to_process))
+    else:
+        categories_to_process = args.category
+        
+    # Get prompts from requested categories
     selected_prompts = {}
-    for category in args.category:
+    for category in categories_to_process:
         if category in prompt_dict:
-            # num 개수만큼만 가져오기 (카테고리에 있는 프롬프트 수보다 적은 경우)
+            # Get only 'num' prompts (or fewer if category has less)
             selected_prompts[category] = prompt_dict[category][
                 : min(args.num, len(prompt_dict[category]))
             ]
-            logger.debug(
-                "카테고리 '%s'에서 %d개의 프롬프트 로드됨",
-                category,
-                len(selected_prompts[category]),
-            )
+            if args.verbose:
+                logger.info(
+                    "Loaded %d prompts from category '%s'",
+                    len(selected_prompts[category]),
+                    category,
+                )
         else:
-            logger.warning("카테고리 '%s'가 프롬프트 파일에 없습니다", category)
+            logger.warning("Category '%s' not found in prompt file", category)
 
-    # 선택된 프롬프트 로깅
+    # Log selected prompts
+    if args.verbose:
+        for category, prompts in selected_prompts.items():
+            logger.info("Category: %s", category)
+            for i, prompt in enumerate(prompts, 1):
+                logger.info(" %d. %s", i, prompt)
+
+    # 모델 선택 및 이미지 생성 부분 개선 (중첩 if문 제거)
+    if args.repo_id not in AVAILABLE_MODELS:
+        logger.error("Repository ID not in supported list: %s", args.repo_id)
+        exit(1)
+
+    # 모델 구성 가져오기
+    configs = AVAILABLE_MODELS[args.repo_id].copy()
+    model_type = configs.pop("type")  # 타입 추출 및 제거
+
+    # 모델 타입 확인
+    if model_type != "sana":
+        logger.error("Unsupported model type: %s", model_type)
+        exit(1)
+
+    # Sana 모델 로드
+    logger.info("Loading Sana model: %s", args.repo_id)
+    pipeline = get_sana(args.repo_id, device, dtype)
+    logger.info("Sana model loaded successfully")
+
+    # 모델 이름 추출
+    model_name = os.path.basename(args.repo_id)
+
+    # 기본 출력 디렉토리 생성
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # 그리드 생성용 이미지 저장
+    category_images = {}
+    category_prompts = {}
+
+    # 각 카테고리별 이미지 생성
     for category, prompts in selected_prompts.items():
-        logger.info("카테고리: %s", category)
-        for i, prompt in enumerate(prompts, 1):
-            logger.info(" %d. %s", i, prompt)
+        # 디렉토리 구조 생성: {model_name}/{category}/
+        model_dir = os.path.join(args.output_dir, model_name)
+        category_dir = os.path.join(model_dir, category)
+        os.makedirs(category_dir, exist_ok=True)
 
-    # repo_id를 통해서 모델의 종류를 추론
-    if args.repo_id in AVAILABLE_MODELS:
-        repo_id = args.repo_id
-        configs = AVAILABLE_MODELS[args.repo_id].copy()  # 복사본 생성
-        model_type = configs.pop("type")  # type을 추출하고 configs에서 제거
+        logger.info("Starting image generation for category '%s'", category)
 
-        # 모델 로드
-        if model_type == "sana":
-            logger.debug("Sana 모델 로드 중: %s", repo_id)
-            pipeline = get_sana(repo_id, device, dtype)
-            logger.info("Sana 모델 로드 완료")
+        # 그리드 생성용 리스트 초기화
+        if not args.no_grid:
+            category_images[category] = []
+            category_prompts[category] = []
 
-            # 출력 디렉토리 생성
-            os.makedirs(args.output_dir, exist_ok=True)
+        for i, prompt in enumerate(prompts):
+            logger.info("Generating image with prompt '%s'...", prompt)
 
-            # 각 카테고리에 대하여 image 생성
-            for category, prompts in selected_prompts.items():
-                # 카테고리별 디렉토리 생성
-                category_dir = os.path.join(args.output_dir, category)
-                os.makedirs(category_dir, exist_ok=True)
+            try:
+                # 이미지 생성
+                image = generate_image(pipeline, prompt, configs, generator)
 
-                logger.info("카테고리 '%s'의 이미지 생성 시작", category)
+                # 프롬프트를 파일명으로 사용하여 이미지 저장
+                # 프롬프트를 파일명으로 사용하여 이미지 저장 (최대 24글자로 제한)
+                cleaned_prompt = prompt.replace(' ', '_').replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+                if len(cleaned_prompt) > 24:
+                    cleaned_prompt = cleaned_prompt[:24]
+                image_filename = f"{cleaned_prompt}_seed{args.seed}.png"
+                image_path = os.path.join(category_dir, image_filename)
+                image.save(image_path)
 
-                for i, prompt in enumerate(prompts):
-                    logger.info("프롬프트 '%s'로 이미지 생성 중...", prompt)
+                # 그리드 생성용으로 저장
+                if not args.no_grid:
+                    category_images[category].append(image)
+                    category_prompts[category].append(prompt)
 
-                    try:
-                        # 이미지 생성
-                        image = generate_image(pipeline, prompt, configs)
+                logger.info("Image saved: %s", image_path)
+            except Exception as e:
+                logger.error("Error generating image: %s", str(e))
 
-                        # 이미지 저장
-                        image_filename = f"{i + 1}_{prompt[:30].replace(' ', '_')}.png"
-                        image_path = os.path.join(category_dir, image_filename)
-                        image.save(image_path)
+        logger.info("Completed image generation for category '%s'", category)
 
-                        logger.info("이미지 저장 완료: %s", image_path)
-                    except Exception as e:
-                        logger.error("이미지 생성 중 오류 발생: %s", str(e))
+        # 그리드 이미지 생성 (--no_grid 옵션이 지정되지 않은 경우)
+        if (
+            not args.no_grid
+            and category in category_images
+            and category_images[category]
+        ):
+            logger.info("Creating grid image for category '%s'", category)
+            grid_filename = f"{category}_grid.png"
+            grid_path = os.path.join(model_dir, grid_filename)
 
-                logger.info("카테고리 '%s'의 이미지 생성 완료", category)
-        else:
-            logger.error("지원하지 않는 모델 타입입니다: %s", model_type)
-    else:
-        logger.error("레포지토리 ID가 지원 목록에 없습니다: %s", args.repo_id)
+            try:
+                create_grid_image(
+                    images=category_images[category],
+                    prompts=category_prompts[category],
+                    category=category,
+                    rows=args.grid_rows,
+                    output_path=grid_path,
+                    title_size=args.title_size,
+                    prompt_size=args.prompt_size,
+                    title_font_size=args.title_font_size,
+                    prompt_font_size=args.prompt_font_size,
+                )
+                logger.info("Grid image saved: %s", grid_path)
+            except Exception as e:
+                logger.error("Error creating grid image: %s", str(e))
 
-    logger.info("모든 처리 완료")
+    # 모든 카테고리 처리 완료
+
+    logger.info("All processing completed")
