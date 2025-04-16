@@ -1,7 +1,7 @@
 
 # 🖼️ DrawBench Glance More
 
-This project performs inference over the [DrawBench](https://arxiv.org/abs/2206.13353) prompt benchmark using recent various image generation models. It enables automated image generation, logging, and grid visualization of outputs by prompt category. 
+This project performs inference over the [DrawBench](https://arxiv.org/abs/2205.11487) prompt benchmark using recent various image generation models. It enables automated image generation, logging, and grid visualization of outputs by prompt category. 
 
 ---
 
