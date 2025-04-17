@@ -35,6 +35,4 @@ def get_sana(
             repo_id,
             torch_dtype=dtype,
         )
-
-    pipeline.to(device)
     return pipeline

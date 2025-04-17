@@ -11,8 +11,15 @@ dependencies = [
     "pandas>=2.2.3",
     "reportlab>=4.3.1",
     "ruff>=0.11.5",
+    "sentencepiece>=0.2.0",
+    "setuptools>=78.1.0",
     "torch>=2.6.0",
     "torchaudio>=2.6.0",
     "torchvision>=0.21.0",
     "transformers>=4.51.2",
+    "triton>=3.2.0",
+    "xformers>=0.0.29.post3",
 ]
+
+[tool.uv.sources]
+diffusers = { git = "https://github.com/huggingface/diffusers.git", rev = "main" }

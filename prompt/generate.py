@@ -4,8 +4,12 @@ from typing import Union, Dict
 from PIL import Image
 import torch
 
+
 def generate_image(
-    pipeline: DiffusionPipeline, prompt: str, configs: Dict[str, Union[str, int, float]], generator: torch.Generator
+    pipeline: DiffusionPipeline,
+    prompt: str,
+    configs: Dict[str, Union[str, int, float]],
+    generator: torch.Generator,
 ) -> Image.Image:
     logger = logging.getLogger(__name__)
 

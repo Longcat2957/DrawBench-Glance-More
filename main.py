@@ -3,6 +3,7 @@ import os
 import torch
 import logging
 from models.sana import get_sana
+from models.hidream import get_hidream
 from prompt.loader import read_prompt_csv
 from prompt.generate import generate_image
 from utils.logger import setup_logger
@@ -43,6 +44,25 @@ AVAILABLE_MODELS = {
         "num_inference_steps": 20,
         "guidance_scale": 4.5,
     },
+    # https://github.com/HiDream-ai/HiDream-I1/blob/main/inference.py
+    "HiDream-ai/HiDream-I1-Fast": {
+        "type": "hidream",
+        "guidance_scale": 0.0,
+        "num_inference_steps": 16,
+        "shift": 3.0,
+    },
+    "HiDream-ai/HiDream-I1-Dev": {
+        "type": "hidream",
+        "guidance_scale": 0.0,
+        "num_inference_steps": 28,
+        "shift": 6.0,
+    },
+    "HiDream-ai/HiDream-I1-Full": {
+        "type": "hidream",
+        "guidance_scale": 5.0,
+        "num_inference_steps": 50,
+        "shift": 3.0,
+    },
 }
 
 parser = argparse.ArgumentParser(description="Prompt Loader")
@@ -64,7 +84,7 @@ parser.add_argument(
 parser.add_argument(
     "--all-categories",
     action="store_true",
-    help="Process all available categories in the prompt file"
+    help="Process all available categories in the prompt file",
 )
 parser.add_argument(
     "--num", type=int, default=1, help="Number of prompts to load from each category"
@@ -144,14 +164,16 @@ if __name__ == "__main__":
     device = get_device(args.device)
     generator = torch.Generator(device=device).manual_seed(args.seed)
     dtype = get_dtype(args.dtype)
-    
+
     # 모든 카테고리 선택 플래그가 활성화되었으면 prompt_dict의 모든 키를 사용
     if args.all_categories:
         categories_to_process = list(prompt_dict.keys())
-        logger.info("Processing all available categories: %s", ", ".join(categories_to_process))
+        logger.info(
+            "Processing all available categories: %s", ", ".join(categories_to_process)
+        )
     else:
         categories_to_process = args.category
-        
+
     # Get prompts from requested categories
     selected_prompts = {}
     for category in categories_to_process:
@@ -185,15 +207,22 @@ if __name__ == "__main__":
     configs = AVAILABLE_MODELS[args.repo_id].copy()
     model_type = configs.pop("type")  # 타입 추출 및 제거
 
-    # 모델 타입 확인
-    if model_type != "sana":
-        logger.error("Unsupported model type: %s", model_type)
-        exit(1)
+    if model_type == "sana":
+        # SANA 모델 로드
+        pipeline = get_sana(
+            repo_id=args.repo_id,
+            device=device,
+            dtype=dtype,
+        )
 
-    # Sana 모델 로드
-    logger.info("Loading Sana model: %s", args.repo_id)
-    pipeline = get_sana(args.repo_id, device, dtype)
-    logger.info("Sana model loaded successfully")
+    elif model_type == "hidream":
+        # HiDream 모델 로드
+        pipeline = get_hidream(
+            repo_id=args.repo_id,
+            device=device,
+            dtype=dtype,
+            shift=configs.pop("shift", 3.0),
+        )
 
     # 모델 이름 추출
     model_name = os.path.basename(args.repo_id)
@@ -228,7 +257,13 @@ if __name__ == "__main__":
 
                 # 프롬프트를 파일명으로 사용하여 이미지 저장
                 # 프롬프트를 파일명으로 사용하여 이미지 저장 (최대 24글자로 제한)
-                cleaned_prompt = prompt.replace(' ', '_').replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+                cleaned_prompt = (
+                    prompt.replace(" ", "_")
+                    .replace(".", "")
+                    .replace(",", "")
+                    .replace("!", "")
+                    .replace("?", "")
+                )
                 if len(cleaned_prompt) > 24:
                     cleaned_prompt = cleaned_prompt[:24]
                 image_filename = f"{cleaned_prompt}_seed{args.seed}.png"
